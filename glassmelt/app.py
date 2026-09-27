@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from .audit.log import AuditLog
 from .audit.record import AuditRecord
 from .batch.charge import Charger
+from .batch.evidence import verify_resume_evidence
 from .batch.scale import BatchScale
 from .burner.air import CombustionAir
 from .burner.draft import air_closed_before_draft_stop, close_combustion_air
@@ -22,7 +23,7 @@ from .burner.ignite import IgnitionUnit
 from .burner.zone import ZoneMap
 from .clock import Clock, SystemClock
 from .config import PlatformConfig, default_config
-from .errors import GlassMeltError, SequenceError
+from .errors import GlassMeltError, InterlockError, SequenceError
 from .eventbus import Event, EventBus
 from .feeder.cut import Shear
 from .feeder.cycle import FormingCycle
@@ -225,11 +226,29 @@ class Platform:
         return self.clock.now()
 
     def start(self) -> dict:
-        """执行启动顺序：投料 → 熔化 → 供料道 → 成型 → 退火。"""
+        """执行启动顺序：先核对落盘证据，再投料 → 熔化 → 供料道 → 成型 → 退火。"""
 
         with self._lock:
             self._startup_steps = []
             steps = self._startup_steps
+            verdict = verify_resume_evidence(
+                self.store, self.audit.journal, self.config.batch, self.clock.now()
+            )
+            self.bus.publish(
+                Event.of(
+                    "batch",
+                    "batch",
+                    "resume_evidence_checked",
+                    subject="batch_scale",
+                    severity="notice" if verdict.ok else "warning",
+                    **verdict.as_dict(),
+                )
+            )
+            if not verdict.ok:
+                raise InterlockError(
+                    "重启证据核对未通过，禁止接着投料：" + "；".join(verdict.findings),
+                    component="batch",
+                )
             pressure = self.draft.start()
             self._note(steps, "draft_start", pressure_pa=round(pressure, 3))
 
@@ -569,12 +588,21 @@ class Platform:
                 missing.append(f"拓扑缺少 {upstream} -> {downstream}")
         return missing
 
+    def resume_verdict(self) -> dict:
+        """重启证据核对结论：落盘基线与审计标定记录是否互相对得上、是否过期。"""
+
+        verdict = verify_resume_evidence(
+            self.store, self.audit.journal, self.config.batch, self.clock.now()
+        )
+        return verdict.as_dict()
+
     def readiness_report(self) -> dict:
         """投料、点火、开闸板、吹气与退火复位的前置条件。"""
 
         stability = self.stability.last_state()
         return {
             "started": self._started,
+            "resume_evidence": self.resume_verdict(),
             "level": self.level.snapshot(),
             "scale_durable": self.scale.is_durable(),
             "draft_negative": self.draft.is_negative(),

@@ -80,10 +80,33 @@ class JsonlJournal:
         return records
 
     def read_segment(self, index: int) -> list[dict]:
-        """读回指定段。"""
+        """读回指定段；段内有断行或损坏记录时抛出带段号行号的异常。"""
 
         path = os.path.join(self._root, f"{index:05d}.jsonl")
         if not os.path.isfile(path):
             return []
+        records: list[dict] = []
         with open(path, "r", encoding="utf-8") as handle:
-            return [json.loads(line) for line in handle if line.strip()]
+            for line_number, line in enumerate(handle, start=1):
+                if not line.strip():
+                    continue
+                try:
+                    records.append(json.loads(line))
+                except ValueError as exc:
+                    raise StorageError(
+                        f"审计日志第 {index} 段第 {line_number} 行损坏，无法核对落盘证据: {exc}",
+                        component="store",
+                    ) from exc
+        return records
+
+    def clear(self) -> int:
+        """删除全部落盘段并复位段计数，返回删除的段数。"""
+
+        with self._lock:
+            removed = 0
+            for entry in os.listdir(self._root):
+                if entry.endswith(".jsonl"):
+                    os.remove(os.path.join(self._root, entry))
+                    removed += 1
+            self._counts = {}
+        return removed

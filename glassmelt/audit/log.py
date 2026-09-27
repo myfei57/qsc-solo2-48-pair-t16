@@ -27,6 +27,20 @@ class AuditLog:
         self._lock = threading.RLock()
         bus.subscribe("*", self._on_event)
 
+    @property
+    def journal(self) -> JsonlJournal:
+        """落盘审计段，供重启证据核对直接读盘。"""
+
+        return self._journal
+
+    def clear(self) -> None:
+        """清空内存尾部与落盘审计段（交付演示从干净证据起步）。"""
+
+        with self._lock:
+            self._records = []
+            self._counters = {}
+        self._journal.clear()
+
     def _on_event(self, event: Event) -> None:
         self.record(AuditRecord.from_event(self._clock.now(), event))
 

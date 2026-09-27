@@ -47,6 +47,7 @@ limits:
     scale_offset_max_kg: 12.0
     mix_tolerance_pct: 1.5
     charge_window_s: 180.0
+    baseline_max_age_s: 604800.0
 pages:
   - overview
   - operations

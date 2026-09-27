@@ -66,9 +66,11 @@ def _cmd_demo(args: argparse.Namespace) -> int:
     clock = ManualClock() if args.fast else SystemClock()
     config = load_config(args.config) if args.config else default_config()
     platform = build_platform(config, clock=clock, storage_root=args.storage_root)
-    # 演示从干净基线起步：先清掉上一轮落盘的标定基线，避免继承上次的偏移。
+    # 演示从干净证据起步：清掉上一轮落盘的标定基线与审计段，避免继承上次
+    # 的偏移，也让重启证据核对按首次启动处理。
     platform.store.remove(BASELINE_KEY)
     platform.scale.restore()
+    platform.audit.clear()
 
     startup = platform.start()
     cycles = [
