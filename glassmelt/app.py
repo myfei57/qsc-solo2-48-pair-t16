@@ -22,7 +22,7 @@ from .burner.ignite import IgnitionUnit
 from .burner.zone import ZoneMap
 from .clock import Clock, SystemClock
 from .config import PlatformConfig, default_config
-from .errors import GlassMeltError, SequenceError
+from .errors import GlassMeltError, SequenceError, StorageError
 from .eventbus import Event, EventBus
 from .feeder.cut import Shear
 from .feeder.cycle import FormingCycle
@@ -44,6 +44,7 @@ from .ns.registry import NamespaceRegistry
 from .ns.topology import Topology, build_default_topology
 from .store.journal import JsonlJournal
 from .store.jsonfile import JsonStore
+from .store.recovery import EvidenceRecovery, RecoveryReport
 from .temp.alarm import AnnealAlarm
 from .temp.curve import AnnealCurve
 from .temp.latch import HeaterLatch
@@ -131,9 +132,9 @@ class Platform:
 
         store = JsonStore(self.config.storage_root)
         self.store = store
-        self.audit = AuditLog(
-            self.clock, self.bus, JsonlJournal(store.root, "audit", segment_limit=512)
-        )
+        journal = JsonlJournal(store.root, "audit", segment_limit=512)
+        self.audit = AuditLog(self.clock, self.bus, journal)
+        self.recovery = EvidenceRecovery(store, journal, self.config.batch, self.bus)
         self.namespaces = NamespaceRegistry(unit)
         self.topology: Topology = build_default_topology()
         self.trend = TrendBuffer(period_s=5.0)
@@ -175,6 +176,7 @@ class Platform:
         self._started = False
         self._startup_steps: list[str] = []
         self._shutdown_steps: list[str] = []
+        self._last_recovery: RecoveryReport | None = None
         self._lock = threading.RLock()
         self._register_namespaces()
 
@@ -230,6 +232,7 @@ class Platform:
         with self._lock:
             self._startup_steps = []
             steps = self._startup_steps
+            self.recover_state()
             pressure = self.draft.start()
             self._note(steps, "draft_start", pressure_pa=round(pressure, 3))
 
@@ -243,8 +246,6 @@ class Platform:
             self.furnace_temp.observe(self.furnace_temp.target_c + 12.0)
             self._note(steps, "ignite", phase=ignition["phase"])
 
-            if not self.scale.restore():
-                self.scale.recalibrate(0.0, self.clock.now())
             self.scale.require_durable()
             self._note(steps, "scale_baseline", epoch=self.scale.epoch)
 
@@ -577,6 +578,9 @@ class Platform:
             "started": self._started,
             "level": self.level.snapshot(),
             "scale_durable": self.scale.is_durable(),
+            "recovery": (
+                self._last_recovery.as_dict() if self._last_recovery is not None else None
+            ),
             "draft_negative": self.draft.is_negative(),
             "air_established": self.air.is_established(),
             "melt_temp_ok": self.furnace_temp.is_ok(),
@@ -591,6 +595,35 @@ class Platform:
             "anneal_latch": self.latch.snapshot(),
             "zone_revision": self.zones.revision,
         }
+
+    def verify_evidence(self) -> dict:
+        """把落盘证据对一遍并返回核对报告；只核对，不改动任何运行状态。"""
+
+        with self._lock:
+            self._last_recovery = self.recovery.verify(self.clock.now())
+            return self._last_recovery.as_dict()
+
+    def recover_state(self) -> dict:
+        """按核对结论恢复落盘状态：全部一致才接着用，不一致就停在原地。
+
+        首次投产（盘上没有任何证据）按零偏移做初始标定；任何一项证据
+        对不上或已过期都抛出 :class:`StorageError`，把不一致逐条列出来，
+        不带着半份状态继续跑。
+        """
+
+        with self._lock:
+            payload = self.verify_evidence()
+            if not payload["ok"]:
+                raise StorageError(
+                    "落盘证据核对未通过，禁止接着运行: "
+                    + "；".join(payload["discrepancies"]),
+                    component="store",
+                )
+            if payload["fresh"]:
+                self.scale.recalibrate(0.0, self.clock.now())
+            else:
+                self.scale.restore()
+            return payload
 
     def note_error(self, error: GlassMeltError) -> dict:
         """把平台异常写入审计，返回落盘记录。"""
@@ -702,6 +735,9 @@ class Platform:
             ),
             "namespaces_by_area": self.namespaces_by_area(),
             "audit": self.audit.summary(),
+            "recovery": (
+                self._last_recovery.as_dict() if self._last_recovery is not None else None
+            ),
             "endpoints": self.endpoints(),
         }
 

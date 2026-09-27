@@ -8,6 +8,8 @@
             交付前的真实运行检查；
 ``status``  打印当前状态快照；
 ``config``  打印生效配置；
+``verify``  核对落盘证据（标定基线与审计日志），不一致就逐条列出并返回
+            非零退出码；
 ``reset``   清掉落盘的投料秤标定基线。
 """
 
@@ -149,13 +151,18 @@ def _cmd_config(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_verify(args: argparse.Namespace) -> int:
+    platform = _build(args)
+    report = platform.verify_evidence()
+    _dump(report)
+    return 0 if report["ok"] else 1
+
+
 def _cmd_reset(args: argparse.Namespace) -> int:
     platform = _build(args)
     removed = platform.store.remove(BASELINE_KEY)
     _dump({"storage_root": platform.store.root, "scale_baseline_removed": removed})
     return 0
-
-
 def build_parser() -> argparse.ArgumentParser:
     """构造命令行解析器。"""
 
@@ -181,6 +188,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     config = sub.add_parser("config", help="打印生效配置")
     config.set_defaults(func=_cmd_config)
+
+    verify = sub.add_parser("verify", help="核对落盘证据（标定基线与审计日志）")
+    verify.set_defaults(func=_cmd_verify)
 
     reset = sub.add_parser("reset", help="清掉落盘的投料秤标定基线")
     reset.set_defaults(func=_cmd_reset)

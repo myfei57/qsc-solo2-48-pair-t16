@@ -302,6 +302,7 @@ class BatchLimits:
     scale_offset_max_kg: float
     mix_tolerance_pct: float
     charge_window_s: float
+    baseline_max_age_s: float
 
     @classmethod
     def from_mapping(cls, section: Mapping[str, Any]) -> "BatchLimits":
@@ -310,6 +311,7 @@ class BatchLimits:
             scale_offset_max_kg=_number(section, "scale_offset_max_kg", minimum=0.0),
             mix_tolerance_pct=_number(section, "mix_tolerance_pct", minimum=0.0),
             charge_window_s=_number(section, "charge_window_s", minimum=0.0),
+            baseline_max_age_s=_number(section, "baseline_max_age_s", minimum=0.0),
         )
         if limits.charge_batch_kg <= 0:
             raise ConfigError("单次投料量必须为正", component="config")
@@ -450,6 +452,7 @@ def default_config() -> PlatformConfig:
             scale_offset_max_kg=12.0,
             mix_tolerance_pct=1.5,
             charge_window_s=180.0,
+            baseline_max_age_s=86400.0,
         ),
         pages=("overview", "operations", "records"),
     )
@@ -516,6 +519,7 @@ def config_to_mapping(cfg: PlatformConfig) -> dict:
                 "scale_offset_max_kg": cfg.batch.scale_offset_max_kg,
                 "mix_tolerance_pct": cfg.batch.mix_tolerance_pct,
                 "charge_window_s": cfg.batch.charge_window_s,
+                "baseline_max_age_s": cfg.batch.baseline_max_age_s,
             },
         },
         "pages": list(cfg.pages),

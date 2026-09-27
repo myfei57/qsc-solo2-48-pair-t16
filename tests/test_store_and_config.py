@@ -64,6 +64,30 @@ def test_journal_reopens_with_existing_segments(tmp_path):
     assert [item["index"] for item in second.read_all()] == [0, 1, 2]
 
 
+def test_journal_integrity_reports_truncated_lines(tmp_path):
+    root = str(tmp_path / "audit")
+    journal = JsonlJournal(str(tmp_path), "audit", segment_limit=2)
+    journal.append({"index": 0})
+    journal.append({"index": 1})
+    journal.append({"index": 2})
+    assert journal.verify_integrity() == []
+    with open(os.path.join(root, "00001.jsonl"), "a", encoding="utf-8") as handle:
+        handle.write('{"index": 3, "part')  # 断电时写到一半的行
+    problems = journal.verify_integrity()
+    assert any("不是完整 JSON" in item for item in problems)
+
+
+def test_journal_integrity_reports_segment_gaps(tmp_path):
+    root = str(tmp_path / "audit")
+    os.makedirs(root)
+    for name in ("00000.jsonl", "00002.jsonl"):
+        with open(os.path.join(root, name), "w", encoding="utf-8") as handle:
+            handle.write('{"ok": true}\n')
+    journal = JsonlJournal(str(tmp_path), "audit", segment_limit=4)
+    problems = journal.verify_integrity()
+    assert any("00001" in item and "不连续" in item for item in problems)
+
+
 def test_audit_log_keeps_memory_and_disk_views(running):
     running.evaluate_anneal(running.config.temp.anneal_alarm_c + 5.0)
     alarms = running.audit.alarms()

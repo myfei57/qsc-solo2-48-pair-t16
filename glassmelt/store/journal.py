@@ -65,6 +65,47 @@ class JsonlJournal:
             self._counts[index] = self._counts.get(index, 0) + 1
             return index
 
+    def verify_integrity(self) -> list[str]:
+        """逐段逐行核对落盘日志，返回问题清单（空列表表示完整可读）。
+
+        断电可能在最后一行写到一半时发生：段索引仍会把它算作一行，但重启
+        读回时 ``json.loads`` 会失败。这里只核对、不修复，结论交给重启
+        恢复流程决定能不能接着用。
+        """
+
+        problems: list[str] = []
+        with self._lock:
+            indexes = sorted(self._counts)
+        if indexes:
+            expected = set(range(indexes[0], indexes[-1] + 1))
+            for missing in sorted(expected.difference(indexes)):
+                problems.append(f"审计段 {missing:05d} 缺失，落盘日志不连续")
+        for index in indexes:
+            path = os.path.join(self._root, f"{index:05d}.jsonl")
+            if not os.path.isfile(path):
+                continue  # 活动段已计数但尚未落过任何一行，属于正常情况
+            try:
+                with open(path, "r", encoding="utf-8") as handle:
+                    lines = handle.readlines()
+            except OSError as exc:
+                problems.append(f"审计段 {index:05d} 无法读取: {exc}")
+                continue
+            for lineno, raw in enumerate(lines, start=1):
+                text = raw.strip()
+                if not text:
+                    continue
+                try:
+                    parsed = json.loads(text)
+                except ValueError as exc:
+                    problems.append(
+                        f"审计段 {index:05d} 第 {lineno} 行不是完整 JSON"
+                        f"（疑似断电写了一半）: {exc}"
+                    )
+                    continue
+                if not isinstance(parsed, dict):
+                    problems.append(f"审计段 {index:05d} 第 {lineno} 行不是 JSON 对象")
+        return problems
+
     def segment_count(self) -> int:
         with self._lock:
             return len(self._counts)
